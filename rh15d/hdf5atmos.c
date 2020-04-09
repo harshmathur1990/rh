@@ -41,6 +41,8 @@ void init_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
   const char routineName[] = "init_hdf5_atmos";
   struct  stat statBuffer;
   int has_B;
+  int g_scale;
+  enum mass_scale scale_atmos;
   hid_t plist_id, ncid;
   hsize_t dims[5];
   size_t nn = 0;
@@ -60,6 +62,10 @@ void init_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
   if ((H5LTget_attribute_int(ncid, "/", "has_B", &has_B)) < 0)
     HERR(routineName);
 
+  if ((H5LTget_attribute_int(ncid, "/", "scale", &g_scale)) < 0)
+    HERR(routineName);
+
+  scale_atmos = (enum mass_scale) g_scale;
   atmos->Stokes = FALSE;
   if ((has_B) && (strcmp(input.Stokes_input, "none"))) atmos->Stokes = TRUE;
 
@@ -107,8 +113,14 @@ void init_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
     HERR(routineName);
   if ((infile->T_varid = H5Dopen2(ncid, TEMP_NAME, H5P_DEFAULT)) < 0)
     HERR(routineName);
-  if ((infile->z_varid = H5Dopen2(ncid, "z", H5P_DEFAULT)) < 0)
-    HERR(routineName);
+  if (scale_atmos == GEOMETRIC) {
+    if ((infile->z_varid = H5Dopen2(ncid, "z", H5P_DEFAULT)) < 0)
+      HERR(routineName);
+  }
+  if (scale_atmos == COLUMN_MASS) {
+    if ((infile->cmass = H5Dopen2(ncid, "columnmass", H5P_DEFAULT)) < 0)
+      HERR(routineName);
+  }
 
   /* Microturbulence, get ID if variable found */
   if (H5LTfind_dataset(ncid, VTURB_NAME)) {
@@ -119,7 +131,13 @@ void init_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
   }
 
   /* Find out if z is written for each (x, y) column */
-  if ((H5LTget_dataset_ndims(ncid, "z", &mpi.ndims_z)) < 0) HERR(routineName);
+  if (scale_atmos == GEOMETRIC) {
+    if ((H5LTget_dataset_ndims(ncid, "z", &mpi.ndims_z)) < 0) HERR(routineName);
+  }
+
+  if (scale_atmos == COLUMN_MASS) {
+    if ((H5LTget_dataset_ndims(ncid, "columnmass", &mpi.ndims_z)) < 0) HERR(routineName);
+  }
 
   if (atmos->Stokes) {
     if ((infile->Bx_varid = H5Dopen2(ncid, BX_NAME, H5P_DEFAULT)) < 0)
@@ -137,6 +155,8 @@ void init_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
   count[1] = infile->nz;
 
   geometry->height = (double *) malloc(infile->nz * sizeof(double));
+  if (scale_atmos == COLUMN_MASS)
+    geometry->cmass = (double *) malloc(infile->nz * sizeof(double));
 
   infile->y   = (double *) malloc(infile->ny * sizeof(double));
   if ((H5LTread_dataset_double(ncid, "y", infile->y)) < 0) HERR(routineName);
@@ -175,7 +195,7 @@ void init_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
     geometry->vboundary[BOTTOM] = THERMALIZED;
   }
   /* some other housekeeping */
-  geometry->scale = GEOMETRIC;
+  geometry->scale = scale_atmos;
   /* --- Construct atmosID from filename and last modification date - */
   stat(input.atmos_input, &statBuffer);
   if ((filename = strrchr(input.atmos_input, '/')) != NULL)
@@ -253,13 +273,24 @@ void readAtmos_hdf5(int xi, int yi, Atmosphere *atmos, Geometry *geometry,
     start[2] = (size_t) yi;   count[2] = 1;
     start[3] = mpi.zcut;      count[3] = atmos->Nspace;
   }
-  dataspace_id = H5Dget_space(infile->z_varid);
-  ierror = H5Sselect_hyperslab(dataspace_id, H5S_SELECT_SET, start,
-                               NULL, count, NULL);
-  if ((ierror = H5Dread(infile->z_varid, H5T_NATIVE_DOUBLE, memspace_id,
-		        dataspace_id, H5P_DEFAULT, geometry->height)) < 0)
-    HERR(routineName);
-  if (( H5Sclose(dataspace_id) ) < 0) HERR(routineName);
+  if (geometry->scale == GEOMETRIC){
+    dataspace_id = H5Dget_space(infile->z_varid);
+    ierror = H5Sselect_hyperslab(dataspace_id, H5S_SELECT_SET, start,
+                                NULL, count, NULL);
+    if ((ierror = H5Dread(infile->z_varid, H5T_NATIVE_DOUBLE, memspace_id,
+              dataspace_id, H5P_DEFAULT, geometry->height)) < 0)
+      HERR(routineName);
+    if (( H5Sclose(dataspace_id) ) < 0) HERR(routineName);
+  }
+  if (geometry->scale == COLUMN_MASS) {
+    dataspace_id = H5Dget_space(infile->cmass);
+    ierror = H5Sselect_hyperslab(dataspace_id, H5S_SELECT_SET, start,
+                                NULL, count, NULL);
+    if ((ierror = H5Dread(infile->cmass, H5T_NATIVE_DOUBLE, memspace_id,
+              dataspace_id, H5P_DEFAULT, geometry->cmass)) < 0)
+      HERR(routineName);
+    if (( H5Sclose(dataspace_id) ) < 0) HERR(routineName);
+  }
   /* redefine dataspace for 4-D variables */
   start[0] = input.p15d_nt; count[0] = 1;
   start[1] = (size_t) xi;   count[1] = 1;
@@ -372,7 +403,10 @@ void close_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
   /* Closes the HDF5 file and frees memory */
   int ierror;
   /* Close the file. */
-  ierror = H5Dclose(infile->z_varid);
+  if (geometry->scale == GEOMETRIC)
+    ierror = H5Dclose(infile->z_varid);
+  if (geometry->scale == COLUMN_MASS)
+    ierror = H5Dclose(infile->cmass);
   ierror = H5Dclose(infile->T_varid);
   if (input.solve_ne == NONE) ierror = H5Dclose(infile->ne_varid);
   ierror = H5Dclose(infile->vz_varid);

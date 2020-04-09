@@ -212,6 +212,7 @@ void drone(void) {
         UpdateAtmosDep();
         /* --- Calculate background opacities --             ------------- */
         Background_p(write_analyze_output=TRUE, equilibria_only=FALSE);
+        convertScales(&atmos, &geometry);
         getProfiles();
         initSolution_p();
         initScatter();
