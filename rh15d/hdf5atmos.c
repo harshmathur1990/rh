@@ -155,8 +155,10 @@ void init_hdf5_atmos(Atmosphere *atmos, Geometry *geometry,
   count[1] = infile->nz;
 
   geometry->height = (double *) malloc(infile->nz * sizeof(double));
-  if (scale_atmos == COLUMN_MASS)
+  if (scale_atmos == COLUMN_MASS) {
     geometry->cmass = (double *) malloc(infile->nz * sizeof(double));
+    geometry->tau_ref = (double *) malloc(infile->nz * sizeof(double));
+  }
 
   infile->y   = (double *) malloc(infile->ny * sizeof(double));
   if ((H5LTread_dataset_double(ncid, "y", infile->y)) < 0) HERR(routineName);
